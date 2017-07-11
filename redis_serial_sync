@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+
+# export keys between 2 redis DB with serial port
+#
+# redis A    <--- /dev/ttyAMA0 ---> redis B
+#
+# set out:k1  --------------------> in:k1
+# in:k2      <--------------------  set out:k2
+
+
+import json
+import redis
+import serial
+import threading
+import time
+
+s = serial.Serial('/dev/ttyAMA0', baudrate=115200)
+r = redis.StrictRedis(db=0)
+
+# create local redis key "in:key_name" on serial receive
+def read_thread():
+    while True:
+        msg = s.readline().decode()
+        d = json.loads(msg)
+        k = 'in:' + d['k']
+        v = d['v']
+        r.set(k, v)
+
+# export local out:key_name to serial port
+# remove local key if export is a success
+def write_thread():
+    while True:
+        for key in r.keys('out:*'):
+            k = key.decode()[4:]
+            v = r.get(key).decode()
+            d = {'k': k, 'v': v}
+            s.write(json.dumps(d).encode()+b'\n')
+            r.delete(key)
+            time.sleep(0.05)
+
+# start serial IO thread
+threading.Thread(target=read_thread).start()
+threading.Thread(target=write_thread).start()

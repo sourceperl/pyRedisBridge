@@ -1,6 +1,6 @@
 # pyRedisBridge
 
-Export keys from a redis DB to one other with a serial link (like Bridge on Arduino Yun)
+Export keys from a redis DB to another one over a serial link (like Bridge on Arduino Yun)
 
 
 Redis A <--- /dev/ttyAMA0 ---> Redis B
@@ -16,7 +16,7 @@ Redis A <--- /dev/ttyAMA0 ---> Redis B
 
 ### Systemd (auto-start)
 
-    sudo cp lib/systemd/system/redis-serial-sync.service /lib/systemd/system/
+    sudo cp redis-serial-sync.service /lib/systemd/system/
     sudo systemctl enable redis-serial-sync.service
     sudo systemctl start redis-serial-sync.service
   

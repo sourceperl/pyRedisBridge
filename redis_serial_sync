@@ -8,14 +8,20 @@
 # in:k2      <--------------------  set out:k2
 
 
+import atexit
 import json
 import redis
 import serial
 import threading
 import time
 
-s = serial.Serial('/dev/ttyAMA0', baudrate=115200)
 r = redis.StrictRedis(db=0)
+s = serial.Serial('/dev/ttyAMA0', baudrate=115200)
+
+# ensure clean at exit
+@atexit.register
+def clean_exit():
+    s.close()
 
 # create local redis key "in:key_name" on serial receive
 def read_thread():
@@ -37,6 +43,7 @@ def write_thread():
             s.write(json.dumps(d).encode()+b'\n')
             r.delete(key)
             time.sleep(0.05)
+        time.sleep(0.5)
 
 # start serial IO thread
 threading.Thread(target=read_thread).start()

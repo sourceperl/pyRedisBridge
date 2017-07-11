@@ -26,7 +26,7 @@ def clean_exit():
 # create local redis key "rx:key_name" on serial receive
 def read_thread():
     while True:
-        msg = s.readline().decode()
+        msg = s.readline().decode('utf8')
         d = json.loads(msg)
         k = 'rx:' + d['k']
         v = d['v']
@@ -37,9 +37,9 @@ def write_thread():
     while True:
         for key in r.keys('tx:*'):
             k = key.decode()[3:]
-            v = r.get(key).decode()
+            v = r.get(key).decode('utf8')
             d = {'k': k, 'v': v}
-            s.write(json.dumps(d).encode()+b'\n')
+            s.write(json.dumps(d).encode('utf8')+b'\n')
             r.delete(key)
             time.sleep(0.05)
         time.sleep(0.5)

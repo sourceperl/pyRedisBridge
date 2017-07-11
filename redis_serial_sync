@@ -4,8 +4,8 @@
 #
 # redis A    <--- /dev/ttyAMA0 ---> redis B
 #
-# set out:k1  --------------------> in:k1
-# in:k2      <--------------------  set out:k2
+# set tx:k1   --------------------> rx:k1
+# rx:k2      <--------------------  set tx:k2
 
 
 import atexit
@@ -23,21 +23,20 @@ s = serial.Serial('/dev/ttyAMA0', baudrate=115200)
 def clean_exit():
     s.close()
 
-# create local redis key "in:key_name" on serial receive
+# create local redis key "rx:key_name" on serial receive
 def read_thread():
     while True:
         msg = s.readline().decode()
         d = json.loads(msg)
-        k = 'in:' + d['k']
+        k = 'rx:' + d['k']
         v = d['v']
         r.set(k, v)
 
-# export local out:key_name to serial port
-# remove local key if export is a success
+# export local tx:key_name to serial port and remove it
 def write_thread():
     while True:
-        for key in r.keys('out:*'):
-            k = key.decode()[4:]
+        for key in r.keys('tx:*'):
+            k = key.decode()[3:]
             v = r.get(key).decode()
             d = {'k': k, 'v': v}
             s.write(json.dumps(d).encode()+b'\n')

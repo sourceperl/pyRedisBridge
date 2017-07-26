@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+
+# export keys between 2 redis DB with serial port
+#
+# redis A    <--- /dev/ttyAMA0 ---> redis B
+#
+# set tx:k1   --------------------> rx:k1
+# rx:k2      <--------------------  set tx:k2
+
+
+import atexit
+import json
+import redis
+import serial
+import threading
+import time
+
+
+# some var
+r = redis.StrictRedis(db=0)
+# s = serial.serial_for_url('loop://', baudrate=115200)
+# s = serial.Serial('/dev/ttyAMA0', baudrate=115200)
+s = serial.Serial('/dev/ttyUSB0', baudrate=460800)
+
+
+# compute a check sum (XOR of bytes)
+def get_c_sum(msg):
+    c_sum = 0
+    for i in msg:
+        c_sum ^= i
+    return c_sum
+
+
+def rx_dict_as_json():
+    # read message:  [RAW message: json + checksum]\n
+    msg = s.readline().rstrip()
+    # decode message parts: [json part][hex checksum]
+    msg_sum = msg[-2:]
+    msg_json = msg[:-2]
+    # check sum part
+    rx_sum = int(msg_sum, base=16)
+    js_sum = get_c_sum(msg_json)
+    if rx_sum != js_sum:
+        r.incr('bridge:rx_sum_error_counter')
+        print('check sum error !!!')
+        return None
+    r.incr('bridge:rx_frame_counter')
+    # DEBUG
+    print('calc_sum:%i rx_sum:%i raw_len:%i raw_msg:%s' % (get_c_sum(msg_json),  int(msg_sum, base=16), len(msg), msg))
+    # decode json part
+    return json.loads(msg_json.decode('utf8'))
+
+
+def tx_dict_as_json(d):
+    js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
+    s.write(js_msg + b'%02X\n' % get_c_sum(js_msg))
+    r.incr('bridge:tx_frame_counter')
+
+
+# ensure clean at exit
+@atexit.register
+def clean_exit():
+    s.close()
+
+
+# create local redis key "rx:key_name" on serial receive
+def read_thread():
+    while True:
+        # receive json part
+        js_d = rx_dict_as_json()
+        if js_d:
+            msg_type = js_d['t']
+            # process every message type
+            if msg_type == 'ALV':
+                print('rx alive message')
+            elif msg_type == 'RKE':
+                print('it\'s a Redis Key Exchange message')
+                k = 'rx:' + js_d['k']
+                v = js_d['v']
+                r.set(k, v)
+
+
+# export local tx:key_name to serial port and remove it
+def write_thread():
+    # init thread vars
+    t_tx_alive = 0.0
+    # main loop
+    while True:
+        # send alive message (at startup and every 5s)
+        if time.time() - t_tx_alive > 5:
+            tx_dict_as_json({'t': 'ALV'})
+            t_tx_alive = time.time()
+        # search all tx:key_name redis keys and send it
+        for key in r.keys('tx:*'):
+            # format compact json msg
+            k = key.decode('utf8')[3:]
+            v = r.get(key).decode('utf8')
+            tx_dict_as_json({'t': 'RKE', 'k': k, 'v': v})
+            r.delete(key)
+            time.sleep(0.005)
+        # before next loop
+        time.sleep(0.2)
+
+# init bridge status
+r.set('bridge:tx_frame_counter', 0)
+r.set('bridge:rx_frame_counter', 0)
+r.set('bridge:rx_sum_error_counter', 0)
+
+# start serial IO thread
+threading.Thread(target=read_thread).start()
+threading.Thread(target=write_thread).start()

@@ -8,6 +8,7 @@
 # rx:k2      <--------------------  set tx:k2
 
 
+import argparse
 import atexit
 import json
 import redis
@@ -16,11 +17,19 @@ import threading
 import time
 
 
+# parse argument
+parser = argparse.ArgumentParser(description='Redis bridge over serial link')
+parser.add_argument('-d', '--device', type=str, default='/dev/ttyAMA0',
+                    help='Serial device (default is /dev/ttyAMA0)')
+parser.add_argument('-b', '--baud', type=int, default=460800,
+                    help='Baud rate (default is 460800)')
+args = parser.parse_args()
+
+
 # some var
 r = redis.StrictRedis(db=0)
 # s = serial.serial_for_url('loop://', baudrate=115200)
-# s = serial.Serial('/dev/ttyAMA0', baudrate=115200)
-s = serial.Serial('/dev/ttyUSB0', baudrate=460800)
+s = serial.Serial(args.device, baudrate=args.baud)
 
 
 # compute a check sum (XOR of bytes)

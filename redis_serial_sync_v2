@@ -19,10 +19,14 @@ import time
 
 # parse argument
 parser = argparse.ArgumentParser(description='Redis bridge over serial link')
+parser.add_argument('-n', '--name', type=str, default='rem',
+                    help='Bridge name (default is rem)')
 parser.add_argument('-d', '--device', type=str, default='/dev/ttyAMA0',
                     help='Serial device (default is /dev/ttyAMA0)')
 parser.add_argument('-b', '--baud', type=int, default=460800,
                     help='Baud rate (default is 460800)')
+parser.add_argument('--alive', type=float, default=5.0,
+                    help='Alive interval in second (default is 5.0)')
 args = parser.parse_args()
 
 
@@ -47,11 +51,14 @@ def rx_dict_as_json():
     msg_sum = msg[-2:]
     msg_json = msg[:-2]
     # check sum part
-    rx_sum = int(msg_sum, base=16)
-    js_sum = get_c_sum(msg_json)
-    if rx_sum != js_sum:
+    try:
+        rx_sum = int(msg_sum, base=16)
+        js_sum = get_c_sum(msg_json)
+        if rx_sum != js_sum:
+            raise ValueError
+    except ValueError:
         r.incr('bridge:rx_sum_error_counter')
-        print('check sum error !!!')
+        print('rx error : check sum mismatch !!!')
         return None
     r.incr('bridge:rx_frame_counter')
     # DEBUG
@@ -80,9 +87,15 @@ def read_thread():
         if js_d:
             msg_type = js_d['t']
             # process every message type
-            if msg_type == 'ALV':
-                print('rx alive message')
-            elif msg_type == 'RKE':
+            if msg_type == 'alive':
+                remote = js_d['n']
+                print('rx alive message from %s' % remote)
+            elif msg_type == 'rpub':
+                print('rx pubsub message')
+                chan = 'rx:' + js_d['c']
+                msg = js_d['m']
+                r.publish(chan, msg)
+            elif msg_type == 'rkey':
                 print('it\'s a Redis Key Exchange message')
                 k = 'rx:' + js_d['k']
                 v = js_d['v']
@@ -93,24 +106,37 @@ def read_thread():
 def write_thread():
     # init thread vars
     t_tx_alive = 0.0
+    # redis pubsub: subscribe to all tx:* channels
+    p = r.pubsub()
+    p.psubscribe('tx:*')
     # main loop
     while True:
         # send alive message (at startup and every 5s)
-        if time.time() - t_tx_alive > 5:
-            tx_dict_as_json({'t': 'ALV'})
+        if time.time() - t_tx_alive > args.alive:
+            tx_dict_as_json({'t': 'alive', 'n': args.name})
             t_tx_alive = time.time()
+        # check pubsub message
+        while True:
+            d_msg = p.get_message()
+            if d_msg is None:
+                break
+            elif d_msg['type'] == 'pmessage':
+                print('pubsub', d_msg['channel'], d_msg['data'])
+                chan = d_msg['channel'].decode('utf8')[3:]
+                msg = d_msg['data'].decode('utf8')
+                tx_dict_as_json({'t': 'rpub', 'c': chan, 'm': msg})
         # search all tx:key_name redis keys and send it
         for key in r.keys('tx:*'):
             # format compact json msg
             k = key.decode('utf8')[3:]
             v = r.get(key).decode('utf8')
-            tx_dict_as_json({'t': 'RKE', 'k': k, 'v': v})
+            tx_dict_as_json({'t': 'rkey', 'k': k, 'v': v})
             r.delete(key)
-            time.sleep(0.005)
         # before next loop
         time.sleep(0.2)
 
 # init bridge status
+r.set('bridge:name', args.name)
 r.set('bridge:tx_frame_counter', 0)
 r.set('bridge:rx_frame_counter', 0)
 r.set('bridge:rx_sum_error_counter', 0)

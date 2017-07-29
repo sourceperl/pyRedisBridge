@@ -17,25 +17,7 @@ import threading
 import time
 
 
-# parse argument
-parser = argparse.ArgumentParser(description='Redis bridge over serial link')
-parser.add_argument('-n', '--name', type=str, default='rem',
-                    help='Bridge name (default is rem)')
-parser.add_argument('-d', '--device', type=str, default='/dev/ttyAMA0',
-                    help='Serial device (default is /dev/ttyAMA0)')
-parser.add_argument('-b', '--baud', type=int, default=460800,
-                    help='Baud rate (default is 460800)')
-parser.add_argument('--alive', type=float, default=5.0,
-                    help='Alive interval in second (default is 5.0)')
-args = parser.parse_args()
-
-
-# some var
-r = redis.StrictRedis(db=0)
-# s = serial.serial_for_url('loop://', baudrate=115200)
-s = serial.Serial(args.device, baudrate=args.baud)
-
-
+# some functions
 # compute a check sum (XOR of bytes)
 def get_c_sum(msg):
     c_sum = 0
@@ -57,12 +39,12 @@ def rx_dict_as_json():
         if rx_sum != js_sum:
             raise ValueError
     except ValueError:
-        r.incr('bridge:rx_sum_error_counter')
+        r.incr(r_name + 'rx_sum_error_counter')
         print('rx error : check sum mismatch !!!')
         return None
-    r.incr('bridge:rx_frame_counter')
-    # DEBUG
-    print('calc_sum:%i rx_sum:%i raw_len:%i raw_msg:%s' % (get_c_sum(msg_json),  int(msg_sum, base=16), len(msg), msg))
+    r.incr(r_name + 'rx_frame_counter')
+    # DEBUG rx message
+    print('calc_sum:%i rx_sum:%i raw_len:%i raw_msg:%s' % (get_c_sum(msg_json), int(msg_sum, base=16), len(msg), msg))
     # decode json part
     return json.loads(msg_json.decode('utf8'))
 
@@ -70,15 +52,23 @@ def rx_dict_as_json():
 def tx_dict_as_json(d):
     js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
     s.write(js_msg + b'%02X\n' % get_c_sum(js_msg))
-    r.incr('bridge:tx_frame_counter')
+    r.incr(r_name + 'tx_frame_counter')
 
 
 # ensure clean at exit
 @atexit.register
 def clean_exit():
+    # remove redis status key
+    r.delete(r_name + 'device')
+    r.delete(r_name + 'redis_db')
+    r.delete(r_name + 'tx_frame_counter')
+    r.delete(r_name + 'rx_frame_counter')
+    r.delete(r_name + 'rx_sum_error_counter')
+    # close serial port
     s.close()
 
 
+# read/write threads
 # create local redis key "rx:key_name" on serial receive
 def read_thread():
     while True:
@@ -91,15 +81,15 @@ def read_thread():
                 remote = js_d['n']
                 print('rx alive message from %s' % remote)
             elif msg_type == 'rpub':
-                print('rx pubsub message')
                 chan = 'rx:' + js_d['c']
                 msg = js_d['m']
                 r.publish(chan, msg)
+                print('rx pubsub message')
             elif msg_type == 'rkey':
-                print('it\'s a Redis Key Exchange message')
                 k = 'rx:' + js_d['k']
                 v = js_d['v']
                 r.set(k, v)
+                print('rx remote key')
 
 
 # export local tx:key_name to serial port and remove it
@@ -121,7 +111,6 @@ def write_thread():
             if d_msg is None:
                 break
             elif d_msg['type'] == 'pmessage':
-                print('pubsub', d_msg['channel'], d_msg['data'])
                 chan = d_msg['channel'].decode('utf8')[3:]
                 msg = d_msg['data'].decode('utf8')
                 tx_dict_as_json({'t': 'rpub', 'c': chan, 'm': msg})
@@ -135,11 +124,32 @@ def write_thread():
         # before next loop
         time.sleep(0.2)
 
+
+# parse argument
+parser = argparse.ArgumentParser(description='Redis bridge over serial link')
+parser.add_argument('-n', '--name', type=str, default='rem',
+                    help='Bridge name (default is rem)')
+parser.add_argument('-d', '--device', type=str, default='/dev/ttyAMA0',
+                    help='Serial device (default is /dev/ttyAMA0)')
+parser.add_argument('-b', '--baud', type=int, default=115200,
+                    help='Baud rate (default is 115200)')
+parser.add_argument('--alive', type=float, default=5.0,
+                    help='Alive interval in second (default is 5.0)')
+parser.add_argument('--db', type=int, default=0,
+                    help='Redis DB number to connect (default is 0)')
+args = parser.parse_args()
+
+# some var
+r = redis.StrictRedis(db=args.db)
+s = serial.Serial(args.device, baudrate=args.baud)
+
 # init bridge status
-r.set('bridge:name', args.name)
-r.set('bridge:tx_frame_counter', 0)
-r.set('bridge:rx_frame_counter', 0)
-r.set('bridge:rx_sum_error_counter', 0)
+r_name = 'brg:' + args.name + ':'
+r.set(r_name + 'device', args.device)
+r.set(r_name + 'redis_db', args.db)
+r.set(r_name + 'tx_frame_counter', 0)
+r.set(r_name + 'rx_frame_counter', 0)
+r.set(r_name + 'rx_sum_error_counter', 0)
 
 # start serial IO thread
 threading.Thread(target=read_thread).start()

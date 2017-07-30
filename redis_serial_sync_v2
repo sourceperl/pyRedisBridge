@@ -8,7 +8,6 @@
 # set tx:k1   --------------------> rx:k1
 # rx:k2      <--------------------  set tx:k2
 
-
 import argparse
 import atexit
 import json
@@ -16,6 +15,21 @@ import redis
 import serial
 import threading
 import time
+
+
+# some class
+class ThreadVar(object):
+    def __init__(self, value=None):
+        self._lock = threading.Lock()
+        self._value = value
+
+    def get(self):
+        with self._lock:
+            return self._value
+
+    def set(self, value):
+        with self._lock:
+            self._value = value
 
 
 # some functions
@@ -58,8 +72,11 @@ def rx_dict_as_json():
 
 
 def tx_dict_as_json(d):
+    # format compact json message
     js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
+    # send json + check sum
     s.write(js_msg + b'%02X\n' % get_c_sum(js_msg))
+    # update stats
     r.incr(r_name + 'tx_frame_counter')
 
 
@@ -87,8 +104,8 @@ def read_thread():
             msg_type = js_d['t']
             # process every message type
             if msg_type == 'alive':
-                remote = js_d['n']
-                print('rx alive message from %s' % remote)
+                rem_node.set(js_d['n'])
+                print('rx alive message from %s' % rem_node.get())
             elif msg_type == 'rpub':
                 chan = 'rx:' + js_d['c']
                 msg = js_d['m']
@@ -151,6 +168,8 @@ args = parser.parse_args()
 # some var
 r = redis.StrictRedis(db=args.db)
 s = serial.Serial(args.device, baudrate=args.baud)
+# global var share by threads
+rem_node = ThreadVar('')
 
 # init bridge status
 r_name = 'brg:' + args.name + ':'
@@ -162,5 +181,5 @@ r.set(r_name + 'rx_sum_error_counter', 0)
 r.set(r_name + 'rx_format_error_counter', 0)
 
 # start serial IO thread
-threading.Thread(target=read_thread).start()
-threading.Thread(target=write_thread).start()
+threading.Thread(target=read_thread, daemon=False).start()
+threading.Thread(target=write_thread, daemon=False).start()

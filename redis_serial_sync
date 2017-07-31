@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 # coding: utf8
 
-# export keys between 2 redis DB with serial port
+# export keys/publish between 2 redis DB with serial port
 #
-# redis A    <--- /dev/ttyAMA0 ---> redis B
+#   redis A           <- /dev/ttyAMA0 ->   redis B
 #
-# set tx:k1   --------------------> rx:k1
-# rx:k2      <--------------------  set tx:k2
+# Redis key :
+# set tx:key1          ----------------> rx:key1
+# rx:key2             <----------------  set tx:key2
+#
+# Redis publish :
+# publish tx:channel1   ---------------> rx:channel1
+# rx:k2                <---------------  publish tx:channel2
+
 
 import argparse
 import atexit
@@ -23,7 +29,7 @@ import time
 class RedisKey:
     def __init__(self, h_redis, name, init_value):
         self._r = h_redis
-        self._k_name = 'brg:' + args.name + ':' + name
+        self._k_name = args.name + ':' + name
         self._r.set(self._k_name, init_value)
 
         atexit.register(self.clean)
@@ -41,28 +47,6 @@ class RedisKey:
         self._r.delete(self._k_name)
 
 
-class ThreadVar:
-    def __init__(self, value=None):
-        self._lock = threading.Lock()
-        self._value = value
-
-    @property
-    def value(self):
-        return self.get()
-
-    @value.setter
-    def value(self, value):
-        self.set(value)
-
-    def get(self):
-        with self._lock:
-            return self._value
-
-    def set(self, value):
-        with self._lock:
-            self._value = value
-
-
 # some functions
 # compute a check sum (XOR of bytes)
 def get_c_sum(msg):
@@ -74,8 +58,9 @@ def get_c_sum(msg):
 
 def rx_dict_as_json():
     # read message:  [RAW message: json + checksum]\n
-    msg = s.readline().rstrip()
+    raw_msg = s.readline()
     # decode message parts: [json part][hex checksum]
+    msg = raw_msg.rstrip()
     msg_sum = msg[-2:]
     msg_json = msg[:-2]
     # check sum part
@@ -86,19 +71,19 @@ def rx_dict_as_json():
             raise ValueError
     except ValueError:
         r_c_sum_err.incr()
-        logging.debug('rx error : check sum mismatch !!!')
+        logging.info('rx: check sum error')
         return None
     # update status
     r_rx_count.incr()
-    # DEBUG rx message
-    logging.debug('calc_sum:%i rx_sum:%i raw_len:%i raw_msg:%s' % (js_sum, rx_sum, len(msg), msg))
     # decode json part
     try:
         rx_dict = json.loads(msg_json.decode('utf8'))
     except (json.decoder.JSONDecodeError, UnicodeDecodeError):
         r_fmt_err.incr()
-        logging.debug('rx error : format error !!!')
+        logging.info('rx: format error')
         return None
+    # dump rx frame
+    logging.debug('rx: frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
     return rx_dict
 
 
@@ -107,9 +92,12 @@ def tx_dict_as_json(d):
     js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
     # send json + check sum
     c_sum = '%02X\n' % get_c_sum(js_msg)
-    s.write(js_msg + c_sum.encode('utf8'))
+    raw_msg = js_msg + c_sum.encode('utf8')
+    s.write(raw_msg)
     # update stats
     r_tx_count.incr()
+    # dump tx frame
+    logging.debug('tx: frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
 
 
 # ensure clean for exit
@@ -125,22 +113,26 @@ def read_thread():
         # receive json part
         js_d = rx_dict_as_json()
         if js_d:
-            msg_type = js_d['t']
             # process every message type
-            if msg_type == 'alive':
-                thv_rem_node_name.value = js_d['n']
-                r_since_alive.set(0)
-                logging.debug('rx alive message from %s' % thv_rem_node_name.get())
-            elif msg_type == 'rpub':
-                chan = 'rx:' + js_d['c']
-                msg = js_d['m']
-                r.publish(chan, msg)
-                logging.debug('rx pubsub message')
-            elif msg_type == 'rkey':
-                k = 'rx:' + js_d['k']
-                v = js_d['v']
-                r.set(k, v)
-                logging.debug('rx remote key')
+            try:
+                # alive frame
+                if js_d['type'] == 'alive':
+                    r_since_alive.set(0)
+                    logging.debug('rx: alive message')
+                # redis publish frame
+                elif js_d['type'] == 'rpub':
+                    chan = args.rx + js_d['chan']
+                    msg = js_d['msg']
+                    r.publish(chan, msg)
+                    logging.debug('rx: publish from remote (channel="%s", message="%s")' % (chan, msg))
+                # redis key frame
+                elif js_d['type'] == 'rkey':
+                    k = args.rx + js_d['key']
+                    v = js_d['val']
+                    r.set(k, v)
+                    logging.debug('rx: key from remote (key="%s", value="%s")' % (k, v))
+            except KeyError as e:
+                logging.debug('field %s not found in json message' % e)
 
 
 # export local tx:key_name to serial port and remove it
@@ -149,12 +141,13 @@ def write_thread():
     t_tx_alive = 0.0
     # redis pubsub: subscribe to all tx:* channels
     p = r.pubsub()
-    p.psubscribe('tx:*')
+    p.psubscribe(args.tx + '*')
+    len_pfx = len(args.tx)
     # main loop
     while True:
         # send alive message (at startup and every 5s)
         if time.time() - t_tx_alive > args.alive:
-            tx_dict_as_json({'t': 'alive', 'n': args.name})
+            tx_dict_as_json({'type': 'alive'})
             t_tx_alive = time.time()
         # check pubsub message
         while True:
@@ -162,15 +155,15 @@ def write_thread():
             if d_msg is None:
                 break
             elif d_msg['type'] == 'pmessage':
-                chan = d_msg['channel'].decode('utf8')[3:]
+                chan = d_msg['channel'].decode('utf8')[len_pfx:]
                 msg = d_msg['data'].decode('utf8')
-                tx_dict_as_json({'t': 'rpub', 'c': chan, 'm': msg})
+                tx_dict_as_json({'type': 'rpub', 'chan': chan, 'msg': msg})
         # search all tx:key_name redis keys and send it
-        for key in r.keys('tx:*'):
+        for key in r.keys(args.tx + '*'):
             # format compact json msg
-            k = key.decode('utf8')[3:]
+            k = key.decode('utf8')[len_pfx:]
             v = r.get(key).decode('utf8')
-            tx_dict_as_json({'t': 'rkey', 'k': k, 'v': v})
+            tx_dict_as_json({'type': 'rkey', 'key': k, 'val': v})
             r.delete(key)
         # before next loop
         time.sleep(0.2)
@@ -178,18 +171,22 @@ def write_thread():
 
 # parse argument
 parser = argparse.ArgumentParser(description='Redis bridge over serial link')
-parser.add_argument('-n', '--name', type=str, default='rem',
-                    help='bridge name (default is rem)')
 parser.add_argument('-p', '--port', type=str, default='/dev/ttyAMA0',
                     help='serial port (default is /dev/ttyAMA0)')
 parser.add_argument('-b', '--baud', type=int, default=115200,
                     help='baud rate (default is 115200)')
 parser.add_argument('-d', '--debug', action='store_true',
                     help='set debug mode')
+parser.add_argument('-n', '--name', type=str, default='brg',
+                    help='name of this bridge instance (default is "brg"")')
 parser.add_argument('--alive', type=float, default=5.0,
                     help='alive interval in second (default is 5.0)')
 parser.add_argument('--db', type=int, default=0,
                     help='redis DB number to connect (default is 0)')
+parser.add_argument('--tx', type=str, default='tx:',
+                    help='redis key or channel prefix for trig a send (default is "tx:")')
+parser.add_argument('--rx', type=str, default='rx:',
+                    help='redis key or channel prefix for receive item (default is "rx:")')
 args = parser.parse_args()
 
 # set logging
@@ -215,8 +212,6 @@ except serial.SerialException as e:
     exit(1)
 # add clean handler
 atexit.register(clean_serial)
-# global var share by threads
-thv_rem_node_name = ThreadVar('')
 
 # init bridge status
 port = RedisKey(r, 'port', args.port)

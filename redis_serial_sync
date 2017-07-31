@@ -21,6 +21,7 @@ import json
 import redis
 import sys
 import serial
+import signal
 import threading
 import time
 
@@ -105,6 +106,9 @@ def clean_serial():
     # close serial port
     s.close()
 
+# for SIGTERM clean exit (call atexit routines)
+def exit_handler(sig_num, frame):
+    sys.exit()
 
 # read/write threads
 # create local redis key "rx:key_name" on serial receive
@@ -188,6 +192,10 @@ parser.add_argument('--tx', type=str, default='tx:',
 parser.add_argument('--rx', type=str, default='rx:',
                     help='redis key or channel prefix for receive item (default is "rx:")')
 args = parser.parse_args()
+
+
+# set signal handler
+signal.signal(signal.SIGTERM, exit_handler)
 
 # set logging
 if args.debug:

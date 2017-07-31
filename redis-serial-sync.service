@@ -3,9 +3,9 @@ Description=Export keys from one redis DB to one other with a serial link
 After=redis-server.service
 
 [Service]
-ExecStart=/usr/local/bin/redis_serial_sync
-ExecStop=/bin/systemctl kill redis-server.service
 Type=simple
+ExecStart=/usr/local/bin/redis_serial_sync
+ExecStop=/bin/systemctl kill redis-serial-sync.service
 
 [Install]
 WantedBy=multi-user.target

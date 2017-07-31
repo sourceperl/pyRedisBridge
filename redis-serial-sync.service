@@ -4,7 +4,7 @@ After=redis-server.service
 
 [Service]
 ExecStart=/usr/local/bin/redis_serial_sync
-ExecStop=/bin/systemctl kill redis_serial_sync
+ExecStop=/bin/systemctl kill redis-server.service
 Type=simple
 
 [Install]

@@ -16,7 +16,7 @@ Redis A <--- /dev/ttyAMA0 ---> Redis B
 
 ### Systemd (auto-start)
 
-    sudo cp redis-serial-sync.service /lib/systemd/system/
+    sudo cp redis-serial-sync.service /etc/systemd/system/
     sudo systemctl enable redis-serial-sync.service
     sudo systemctl start redis-serial-sync.service
   

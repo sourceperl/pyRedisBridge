@@ -106,7 +106,8 @@ def tx_dict_as_json(d):
     # format compact json message
     js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
     # send json + check sum
-    s.write(js_msg + b'%02X\n' % get_c_sum(js_msg))
+    c_sum = '%02X\n' % get_c_sum(js_msg)
+    s.write(js_msg + c_sum.encode('utf8'))
     # update stats
     r_tx_count.incr()
 

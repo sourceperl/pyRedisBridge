@@ -106,9 +106,11 @@ def clean_serial():
     # close serial port
     s.close()
 
+
 # for SIGTERM clean exit (call atexit routines)
 def exit_handler(sig_num, frame):
     sys.exit()
+
 
 # read/write threads
 # create local redis key "rx:key_name" on serial receive

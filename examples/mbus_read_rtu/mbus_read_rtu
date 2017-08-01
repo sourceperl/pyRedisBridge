@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# main loop
+while true; do
+
+  # read in ober PSLS
+  VALUE=$(mbtget -a 26670 -n 3 -s -u 26 163.110.4.54)
+
+  # read is a success ?
+  if [ $? -eq 0 ]; then
+
+    # format value
+    OBER_P=$(echo $VALUE | awk -F ';' '{printf "%.1f", int($1)/10}')
+    OBER_Q=$(echo $VALUE | awk -F ';' '{printf "%d", int($3)}')
+
+    # send to redis bridge
+    redis-cli set tx:ober_p $OBER_P &>/dev/null
+    redis-cli set tx:ober_q $OBER_Q &>/dev/null
+
+  fi
+  
+  # wait before next loop
+  sleep 30
+
+done

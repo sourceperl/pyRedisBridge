@@ -1,0 +1,11 @@
+[Unit]
+Description=Read values in RTU with modbus/TCP export with redis bridge
+After=redis-server.service
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/local/bin/mbus_read_rtu
+
+[Install]
+WantedBy=multi-user.target

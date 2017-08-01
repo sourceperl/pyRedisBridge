@@ -161,15 +161,20 @@ def write_thread():
             if d_msg is None:
                 break
             elif d_msg['type'] == 'pmessage':
-                chan = d_msg['channel'].decode('utf8')[len_pfx:]
-                msg = d_msg['data'].decode('utf8')
-                tx_dict_as_json({'type': 'rpub', 'chan': chan, 'msg': msg})
+                try:
+                    chan = d_msg['channel'].decode('utf8')[len_pfx:]
+                    msg = d_msg['data'].decode('utf8')
+                    tx_dict_as_json({'type': 'rpub', 'chan': chan, 'msg': msg})
+                except UnicodeDecodeError:
+                    logging.debug('tx: redis publish contain non-utf8 byte, skip it')
         # search all tx:key_name redis keys and send it
         for key in r.keys(args.tx + '*'):
-            # format compact json msg
-            k = key.decode('utf8')[len_pfx:]
-            v = r.get(key).decode('utf8')
-            tx_dict_as_json({'type': 'rkey', 'key': k, 'val': v})
+            try:
+                k = key.decode('utf8')[len_pfx:]
+                v = r.get(key).decode('utf8')
+                tx_dict_as_json({'type': 'rkey', 'key': k, 'val': v})
+            except UnicodeDecodeError:
+                logging.debug('tx: redis key contain non-utf8 byte, skip it')
             r.delete(key)
         # before next loop
         time.sleep(0.2)

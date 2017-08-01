@@ -5,7 +5,7 @@ with open('requirements.txt') as f:
 
 setup(
     name='pyRedisBridge',
-    version='0.0.6',
+    version='0.0.7',
     license='MIT',
     url='https://github.com/sourceperl/pyRedisBridge',
     platforms='any',

@@ -79,7 +79,7 @@ def rx_dict_as_json():
     # decode json part
     try:
         rx_dict = json.loads(msg_json.decode('utf8'))
-    except (json.decoder.JSONDecodeError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError):
         r_fmt_err.incr()
         logging.info('rx: format error')
         return None

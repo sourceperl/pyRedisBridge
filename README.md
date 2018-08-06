@@ -14,9 +14,20 @@ Redis A <--- /dev/ttyAMA0 ---> Redis B
 
     sudo python3 setup.py install
 
-### Systemd (auto-start)
+### Supervisor
+
+    sudo apt-get install supervisor
+    # for "bureau" rpi
+    sudo cp etc/supervisor/conf.d/rpi_bridge_bureau.conf /etc/supervisor/conf.d/
+    # for "indus" rpi
+    sudo cp etc/supervisor/conf.d/rpi_bridge_indus.conf /etc/supervisor/conf.d/
+    # for "internet" rpi
+    sudo cp etc/supervisor/conf.d/rpi_bridge_internet.conf /etc/supervisor/conf.d/
+    # reload conf
+    sudo supervisorctl update
+
+### Systemd (auto-start) [deprecated]
 
     sudo cp redis-serial-sync.service /etc/systemd/system/
     sudo systemctl enable redis-serial-sync.service
     sudo systemctl start redis-serial-sync.service
-  

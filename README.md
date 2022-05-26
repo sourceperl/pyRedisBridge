@@ -12,22 +12,37 @@ Redis A <--- /dev/ttyAMA0 ---> Redis B
 
 ### Setup
 
-    sudo python3 setup.py install
+```bash
+sudo python3 setup.py install
+```
+
+### Fix serial port name (add symlink)
+
+```bash
+# how-to get serial string for a specific serial port
+udevadm info --name=/dev/ttyUSB0 --attribute-walk | grep {serial}
+# copy a udev rules file template to add symlink in /dev directory
+sudo cp etc/udev/rules.d/10-usb-serial.local.rules /etc/udev/rules.d/
+```
 
 ### Supervisor
 
-    sudo apt-get install supervisor
-    # for "bureau" rpi
-    sudo cp etc/supervisor/conf.d/rpi_bridge_bureau.conf /etc/supervisor/conf.d/
-    # for "indus" rpi
-    sudo cp etc/supervisor/conf.d/rpi_bridge_indus.conf /etc/supervisor/conf.d/
-    # for "internet" rpi
-    sudo cp etc/supervisor/conf.d/rpi_bridge_internet.conf /etc/supervisor/conf.d/
-    # reload conf
-    sudo supervisorctl update
+```bash
+sudo apt-get install supervisor
+# for "bureau" rpi
+sudo cp etc/supervisor/conf.d/rpi_bridge_bureau.conf /etc/supervisor/conf.d/
+# for "indus" rpi
+sudo cp etc/supervisor/conf.d/rpi_bridge_indus.conf /etc/supervisor/conf.d/
+# for "internet" rpi
+sudo cp etc/supervisor/conf.d/rpi_bridge_internet.conf /etc/supervisor/conf.d/
+# reload conf
+sudo supervisorctl update
+```
 
 ### Systemd (auto-start) [deprecated]
 
-    sudo cp redis-serial-sync.service /etc/systemd/system/
-    sudo systemctl enable redis-serial-sync.service
-    sudo systemctl start redis-serial-sync.service
+```bash
+sudo cp redis-serial-sync.service /etc/systemd/system/
+sudo systemctl enable redis-serial-sync.service
+sudo systemctl start redis-serial-sync.service
+```

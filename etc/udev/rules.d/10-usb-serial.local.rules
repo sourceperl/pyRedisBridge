@@ -1,0 +1,2 @@
+ACTION=="add", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="FTA6LHAQ", SYMLINK+="bridge-ind"
+ACTION=="add", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="FTA6LHAR", SYMLINK+="bridge-bur"

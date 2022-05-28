@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-# coding: utf8
 
-# export keys/publish between 2 redis DB with serial port
-#
+"""Export keys/publish between 2 redis DB with serial port."""
+
 #   redis A           <- /dev/ttyAMA0 ->   redis B
 #
 # Redis key :
@@ -26,28 +25,6 @@ import redis
 import serial
 
 
-# some class
-class RedisKey:
-    def __init__(self, h_redis, name, init_value):
-        self._r = h_redis
-        self._k_name = args.name + ':' + name
-        self._r.set(self._k_name, init_value)
-
-        atexit.register(self.clean)
-
-    def set(self, value):
-        return self._r.set(self._k_name, value)
-
-    def get(self):
-        return self._r.get(self._k_name)
-
-    def incr(self):
-        self._r.incr(self._k_name)
-
-    def clean(self):
-        self._r.delete(self._k_name)
-
-
 # some functions
 def msg_checksum(msg):
     """Compute a check sum (XOR of bytes)."""
@@ -57,6 +34,7 @@ def msg_checksum(msg):
     return c_sum
 
 
+# threads define
 def import_thread():
     """Thread that process income serial message.
     Produce redis rx:key for remote key or rx:channel
@@ -75,16 +53,14 @@ def import_thread():
             if int(checksum_part, base=16) != msg_checksum(json_part):
                 raise ValueError
         except ValueError:
-            r_c_sum_err.incr()
+            rdb.hincrby(stat_hash, stat_checksum_err)
             logging.info('rx: check sum error')
             continue
-        # update status
-        r_rx_count.incr()
         # decode json part
         try:
             js_d = json.loads(json_part.decode('utf8'))
         except (ValueError, UnicodeDecodeError):
-            r_fmt_err.incr()
+            rdb.hincrby(stat_hash, stat_format_err)
             logging.info('rx: format error')
             continue
         # dump rx frame
@@ -93,22 +69,24 @@ def import_thread():
         try:
             # alive frame
             if js_d['type'] == 'alive':
-                r_since_alive.set(0)
+                rdb.hset(stat_hash, stat_since_alive, 0)
                 logging.debug('rx: alive message')
             # redis publish frame
             elif js_d['type'] == 'rpub':
                 chan = args.rx + js_d['chan']
                 clean_msg = js_d['msg']
                 rdb.publish(chan, clean_msg)
+                rdb.hincrby(stat_hash, stat_rx_count)
                 logging.debug('rx: publish from remote (channel="%s", message="%s")' % (chan, clean_msg))
             # redis key frame
             elif js_d['type'] == 'rkey':
-                k = args.rx + js_d['key']
-                v = js_d['val']
-                rdb.set(k, v)
-                logging.debug('rx: key from remote (key="%s", value="%s")' % (k, v))
-        except KeyError as e:
-            logging.debug('field %s not found in json message' % e)
+                remote_k = args.rx + js_d['key']
+                remote_v = js_d['val']
+                rdb.set(remote_k, remote_v)
+                rdb.hincrby(stat_hash, stat_rx_count)
+                logging.debug('rx: key from remote (key="%s", value="%s")' % (remote_k, remote_v))
+        except KeyError as k_except:
+            logging.debug('field %s not found in json message' % k_except)
 
 
 def export_thread():
@@ -123,8 +101,6 @@ def export_thread():
         raw_msg = js_msg + c_sum.encode('utf8')
         # send RAW message to serial line
         ser.write(raw_msg)
-        # update stats
-        r_tx_count.incr()
         # dump tx frame
         logging.debug('tx: frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
 
@@ -150,6 +126,7 @@ def export_thread():
                     chan = d_msg['channel'].decode('utf8')[len_pfx:]
                     msg = d_msg['data'].decode('utf8')
                     tx_dict_as_json({'type': 'rpub', 'chan': chan, 'msg': msg})
+                    rdb.hincrby(stat_hash, stat_tx_count)
                 except UnicodeDecodeError:
                     logging.debug('tx: redis publish contain non-utf8 byte, skip it')
         # search all tx:key_name redis keys and send it
@@ -158,6 +135,7 @@ def export_thread():
                 k = key.decode('utf8')[len_pfx:]
                 v = rdb.get(key).decode('utf8')
                 tx_dict_as_json({'type': 'rkey', 'key': k, 'val': v})
+                rdb.hincrby(stat_hash, stat_tx_count)
             except UnicodeDecodeError:
                 logging.debug('tx: redis key contain non-utf8 byte, skip it')
             rdb.delete(key)
@@ -207,14 +185,24 @@ if __name__ == '__main__':
         # ensure serial close at exit
         atexit.register(ser.close)
 
-        # init bridge status
-        port = RedisKey(rdb, 'port', args.port)
-        r_since_alive = RedisKey(rdb, 'since_alive', 0)
-        r_redis_db = RedisKey(rdb, 'redis_db', args.db)
-        r_tx_count = RedisKey(rdb, 'tx_count', 0)
-        r_rx_count = RedisKey(rdb, 'rx_count', 0)
-        r_c_sum_err = RedisKey(rdb, 'c_sum_err', 0)
-        r_fmt_err = RedisKey(rdb, 'fmt_err', 0)
+        # init bridge hash status
+        stat_hash = f'{args.name}:stats'
+        stat_port = 'port'
+        stat_redis_db = 'redis_db'
+        stat_since_alive = 'since_alive'
+        stat_checksum_err = 'checksum_error'
+        stat_format_err = 'format_error'
+        stat_tx_count = 'tx_count'
+        stat_rx_count = 'rx_count'
+        # clear old hash and populate-it with initial values
+        rdb.delete(stat_hash)
+        rdb.hset(stat_hash, stat_port, args.port)
+        rdb.hset(stat_hash, stat_redis_db, args.db)
+        rdb.hset(stat_hash, stat_since_alive, 0)
+        rdb.hset(stat_hash, stat_checksum_err, 0)
+        rdb.hset(stat_hash, stat_format_err, 0)
+        rdb.hset(stat_hash, stat_tx_count, 0)
+        rdb.hset(stat_hash, stat_rx_count, 0)
 
         # start serial IO thread
         threading.Thread(target=import_thread, daemon=True).start()
@@ -222,7 +210,7 @@ if __name__ == '__main__':
 
         # main thread
         while True:
-            r_since_alive.incr()
+            rdb.hincrby(stat_hash, stat_since_alive)
             time.sleep(1.0)
 
     # on redis error

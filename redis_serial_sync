@@ -2,15 +2,16 @@
 
 """Export keys/publish between 2 redis DB with serial port."""
 
-#   redis A           <- /dev/ttyAMA0 ->   redis B
+#  node A              <- /dev/ttyUSB0 ->   node B
+#  remote = ndb                             remote = nda
 #
-# Redis key :
-# set tx:key1          ----------------> rx:key1
-# rx:key2             <----------------  set tx:key2
+# key exchange with remote:
+#  set tx:ndb:key1      ---------------->   rx:nda:key1
+#  rx:ndb:key2         <----------------    set tx:nda:key2
 #
-# Redis publish :
-# publish tx:channel1   ---------------> rx:channel1
-# rx:channel2          <---------------  publish tx:channel2
+# publish to/from remote:
+#  publish tx:ndb:chan1  --------------->   rx:nda:chan1
+#  rx:ndb:chan2         <---------------    publish tx:nda:chan2
 
 
 import argparse
@@ -37,10 +38,13 @@ def msg_checksum(msg):
 # threads define
 def import_thread():
     """Thread that process income serial message.
-    Produce redis rx:key for remote key or rx:channel
+    Produce redis rx:rem:key for remote key or rx:rem:channel
     for remote publish on incoming ad-hoc message.
     Update stats for alive message.
     """
+    # flush serial buffer
+    ser.flushInput()
+    # receive loop
     while True:
         # read message:  [dict as a compact json msg][C-SUM]CR
         serial_msg = ser.readline()
@@ -53,46 +57,46 @@ def import_thread():
             if int(checksum_part, base=16) != msg_checksum(json_part):
                 raise ValueError
         except ValueError:
-            rdb.hincrby(stat_hash, stat_checksum_err)
-            logging.info('rx: check sum error')
+            rdb.hincrby(stats_hash, stat_checksum_err)
+            logging.warning('receive frame with check sum error')
             continue
         # decode json part
         try:
-            js_d = json.loads(json_part.decode('utf8'))
+            json_d = json.loads(json_part.decode('utf8'))
         except (ValueError, UnicodeDecodeError):
-            rdb.hincrby(stat_hash, stat_format_err)
-            logging.info('rx: format error')
+            rdb.hincrby(stats_hash, stat_format_err)
+            logging.warning('receive frame with format error')
             continue
         # dump rx frame
-        logging.debug('rx: frame [raw_len:%i raw_msg:%s]' % (len(serial_msg), serial_msg))
+        logging.debug('receive frame [len:%i raw_msg:%s]' % (len(serial_msg), serial_msg))
         # process every message type
         try:
             # alive frame
-            if js_d['type'] == 'alive':
-                rdb.hset(stat_hash, stat_since_alive, 0)
-                logging.debug('rx: alive message')
+            if json_d['type'] == 'alive':
+                rdb.hset(stats_hash, stat_since_alive, 0)
+                logging.debug('receive an alive message from remote')
             # redis publish frame
-            elif js_d['type'] == 'rpub':
-                chan = args.rx + js_d['chan']
-                clean_msg = js_d['msg']
+            elif json_d['type'] == 'rpub':
+                chan = rx_prefix + json_d['chan']
+                clean_msg = json_d['msg']
                 rdb.publish(chan, clean_msg)
-                rdb.hincrby(stat_hash, stat_rx_count)
-                logging.debug('rx: publish from remote (channel="%s", message="%s")' % (chan, clean_msg))
+                rdb.hincrby(stats_hash, stat_rx_count)
+                logging.debug('receive a publish from remote (channel="%s", message="%s")' % (chan, clean_msg))
             # redis key frame
-            elif js_d['type'] == 'rkey':
-                remote_k = args.rx + js_d['key']
-                remote_v = js_d['val']
+            elif json_d['type'] == 'rkey':
+                remote_k = rx_prefix + json_d['key']
+                remote_v = json_d['val']
                 rdb.set(remote_k, remote_v)
-                rdb.hincrby(stat_hash, stat_rx_count)
-                logging.debug('rx: key from remote (key="%s", value="%s")' % (remote_k, remote_v))
+                rdb.hincrby(stats_hash, stat_rx_count)
+                logging.debug('receive a key from remote (key="%s", value="%s")' % (remote_k, remote_v))
         except KeyError as k_except:
             logging.debug('field %s not found in json message' % k_except)
 
 
 def export_thread():
-    """Thread that export redis key as tx:my_key to serial port"""
+    """Thread that export redis key as tx:[remote]:my_key to serial port"""
 
-    def tx_dict_as_json(d):
+    def tx_as_json(d):
         """Convert dict object to [dict as compact json msg][C-SUM]CR and send-it."""
         # dict -> compact json msg as bytes
         js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
@@ -102,19 +106,19 @@ def export_thread():
         # send RAW message to serial line
         ser.write(raw_msg)
         # dump tx frame
-        logging.debug('tx: frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
+        logging.debug('transmit frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
 
     # init thread vars
     t_tx_alive = 0.0
-    # redis pubsub: subscribe to all tx:* channels
+    # redis pubsub: subscribe to all tx:[remote]:* channels
     p = rdb.pubsub()
-    p.psubscribe(args.tx + '*')
-    len_pfx = len(args.tx)
+    p.psubscribe(tx_prefix + '*')
+    len_pfx = len(tx_prefix)
     # main loop
     while True:
-        # send alive message (at startup and every 5s)
+        # send alive message (at startup and every args.alive seconds)
         if time.time() - t_tx_alive > args.alive:
-            tx_dict_as_json({'type': 'alive'})
+            tx_as_json({'type': 'alive'})
             t_tx_alive = time.time()
         # check pubsub message
         while True:
@@ -123,21 +127,21 @@ def export_thread():
                 break
             elif d_msg['type'] == 'pmessage':
                 try:
-                    chan = d_msg['channel'].decode('utf8')[len_pfx:]
-                    msg = d_msg['data'].decode('utf8')
-                    tx_dict_as_json({'type': 'rpub', 'chan': chan, 'msg': msg})
-                    rdb.hincrby(stat_hash, stat_tx_count)
+                    tx_chan = d_msg['channel'].decode('utf8')[len_pfx:]
+                    tx_msg = d_msg['data'].decode('utf8')
+                    tx_as_json({'type': 'rpub', 'chan': tx_chan, 'msg': tx_msg})
+                    rdb.hincrby(stats_hash, stat_tx_count)
                 except UnicodeDecodeError:
-                    logging.debug('tx: redis publish contain non-utf8 byte, skip it')
+                    logging.warning('transmit redis publish contain non-utf8 byte, skip it')
         # search all tx:key_name redis keys and send it
-        for key in rdb.keys(args.tx + '*'):
+        for key in rdb.keys(tx_prefix + '*'):
             try:
-                k = key.decode('utf8')[len_pfx:]
-                v = rdb.get(key).decode('utf8')
-                tx_dict_as_json({'type': 'rkey', 'key': k, 'val': v})
-                rdb.hincrby(stat_hash, stat_tx_count)
+                tx_key = key.decode('utf8')[len_pfx:]
+                tx_value = rdb.get(key).decode('utf8')
+                tx_as_json({'type': 'rkey', 'key': tx_key, 'val': tx_value})
+                rdb.hincrby(stats_hash, stat_tx_count)
             except UnicodeDecodeError:
-                logging.debug('tx: redis key contain non-utf8 byte, skip it')
+                logging.debug('transmit redis key contain non-utf8 byte, skip it')
             rdb.delete(key)
         # before next loop
         time.sleep(0.2)
@@ -152,16 +156,12 @@ if __name__ == '__main__':
                         help='baud rate (default is 115200)')
     parser.add_argument('-d', '--debug', action='store_true',
                         help='set debug mode')
-    parser.add_argument('-n', '--name', type=str, default='brg',
-                        help='name of this bridge instance (default is "brg")')
-    parser.add_argument('--alive', type=float, default=5.0,
-                        help='alive interval in second (default is 5.0)')
+    parser.add_argument('-r', '--remote', type=str, default='rem',
+                        help='name of the remote bridge instance (default is "rem")')
+    parser.add_argument('--alive', type=float, default=30.0,
+                        help='alive interval in second (default is 30.0)')
     parser.add_argument('--db', type=int, default=0,
                         help='redis DB number to connect (default is 0)')
-    parser.add_argument('--tx', type=str, default='tx:',
-                        help='redis key or channel prefix for trig a send (default is "tx:")')
-    parser.add_argument('--rx', type=str, default='rx:',
-                        help='redis key or channel prefix for receive item (default is "rx:")')
     args = parser.parse_args()
 
     # set signal handler
@@ -182,11 +182,13 @@ if __name__ == '__main__':
         rdb = redis.StrictRedis(db=args.db)
         # init serial port
         ser = serial.Serial(args.port, baudrate=args.baud)
-        # ensure serial close at exit
-        atexit.register(ser.close)
+
+        # set tx/rx prefix
+        tx_prefix = f'tx:{args.remote}:'
+        rx_prefix = f'rx:{args.remote}:'
 
         # init bridge hash status
-        stat_hash = f'{args.name}:stats'
+        stats_hash = f'brg:{args.remote}:stats'
         stat_port = 'port'
         stat_redis_db = 'redis_db'
         stat_since_alive = 'since_alive'
@@ -195,14 +197,27 @@ if __name__ == '__main__':
         stat_tx_count = 'tx_count'
         stat_rx_count = 'rx_count'
         # clear old hash and populate-it with initial values
-        rdb.delete(stat_hash)
-        rdb.hset(stat_hash, stat_port, args.port)
-        rdb.hset(stat_hash, stat_redis_db, args.db)
-        rdb.hset(stat_hash, stat_since_alive, 0)
-        rdb.hset(stat_hash, stat_checksum_err, 0)
-        rdb.hset(stat_hash, stat_format_err, 0)
-        rdb.hset(stat_hash, stat_tx_count, 0)
-        rdb.hset(stat_hash, stat_rx_count, 0)
+        rdb.delete(stats_hash)
+        rdb.hset(stats_hash, stat_port, args.port)
+        rdb.hset(stats_hash, stat_redis_db, args.db)
+        rdb.hset(stats_hash, stat_since_alive, 0)
+        rdb.hset(stats_hash, stat_checksum_err, 0)
+        rdb.hset(stats_hash, stat_format_err, 0)
+        rdb.hset(stats_hash, stat_tx_count, 0)
+        rdb.hset(stats_hash, stat_rx_count, 0)
+
+        # at exit handler
+        def on_exit():
+            """Exit handler."""
+            # remove all owned redis keys
+            for k in rdb.keys(rx_prefix + '*'):
+                rdb.delete(k)
+            # remove stats hash
+            rdb.delete(stats_hash)
+            # close serial port
+            ser.close()
+        # register on_exit handler
+        atexit.register(on_exit)
 
         # start serial IO thread
         threading.Thread(target=import_thread, daemon=True).start()
@@ -210,7 +225,7 @@ if __name__ == '__main__':
 
         # main thread
         while True:
-            rdb.hincrby(stat_hash, stat_since_alive)
+            rdb.hincrby(stats_hash, stat_since_alive)
             time.sleep(1.0)
 
     # on redis error

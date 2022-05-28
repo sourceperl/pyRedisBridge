@@ -11,19 +11,19 @@
 #
 # Redis publish :
 # publish tx:channel1   ---------------> rx:channel1
-# rx:k2                <---------------  publish tx:channel2
+# rx:channel2          <---------------  publish tx:channel2
 
 
 import argparse
 import atexit
 import logging
 import json
-import redis
 import sys
-import serial
 import signal
 import threading
 import time
+import redis
+import serial
 
 
 # some class
@@ -49,104 +49,89 @@ class RedisKey:
 
 
 # some functions
-# compute a check sum (XOR of bytes)
-def get_c_sum(msg):
+def msg_checksum(msg):
+    """Compute a check sum (XOR of bytes)."""
     c_sum = 0
     for i in msg:
         c_sum ^= i
     return c_sum
 
 
-def rx_dict_as_json():
-    # read message:  [RAW message: json + checksum]\n
-    raw_msg = s.readline()
-    # decode message parts: [json part][hex checksum]
-    msg = raw_msg.rstrip()
-    msg_sum = msg[-2:]
-    msg_json = msg[:-2]
-    # check sum part
-    try:
-        rx_sum = int(msg_sum, base=16)
-        js_sum = get_c_sum(msg_json)
-        if rx_sum != js_sum:
-            raise ValueError
-    except ValueError:
-        r_c_sum_err.incr()
-        logging.info('rx: check sum error')
-        return None
-    # update status
-    r_rx_count.incr()
-    # decode json part
-    try:
-        rx_dict = json.loads(msg_json.decode('utf8'))
-    except (ValueError, UnicodeDecodeError):
-        r_fmt_err.incr()
-        logging.info('rx: format error')
-        return None
-    # dump rx frame
-    logging.debug('rx: frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
-    return rx_dict
-
-
-def tx_dict_as_json(d):
-    # format compact json message
-    js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
-    # send json + check sum
-    c_sum = '%02X\n' % get_c_sum(js_msg)
-    raw_msg = js_msg + c_sum.encode('utf8')
-    s.write(raw_msg)
-    # update stats
-    r_tx_count.incr()
-    # dump tx frame
-    logging.debug('tx: frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
-
-
-# ensure clean for exit
-def clean_serial():
-    # close serial port
-    s.close()
-
-
-# for SIGTERM clean exit (call atexit routines)
-def exit_handler(sig_num, frame):
-    sys.exit()
-
-
-# read/write threads
-# create local redis key "rx:key_name" on serial receive
-def read_thread():
+def import_thread():
+    """Thread that process income serial message.
+    Produce redis rx:key for remote key or rx:channel
+    for remote publish on incoming ad-hoc message.
+    Update stats for alive message.
+    """
     while True:
-        # receive json part
-        js_d = rx_dict_as_json()
-        if js_d:
-            # process every message type
-            try:
-                # alive frame
-                if js_d['type'] == 'alive':
-                    r_since_alive.set(0)
-                    logging.debug('rx: alive message')
-                # redis publish frame
-                elif js_d['type'] == 'rpub':
-                    chan = args.rx + js_d['chan']
-                    msg = js_d['msg']
-                    r.publish(chan, msg)
-                    logging.debug('rx: publish from remote (channel="%s", message="%s")' % (chan, msg))
-                # redis key frame
-                elif js_d['type'] == 'rkey':
-                    k = args.rx + js_d['key']
-                    v = js_d['val']
-                    r.set(k, v)
-                    logging.debug('rx: key from remote (key="%s", value="%s")' % (k, v))
-            except KeyError as e:
-                logging.debug('field %s not found in json message' % e)
+        # read message:  [dict as a compact json msg][C-SUM]CR
+        serial_msg = ser.readline()
+        # decode message parts: [json part][2 digits hex checksum]
+        clean_msg = serial_msg.rstrip()
+        checksum_part = clean_msg[-2:]
+        json_part = clean_msg[:-2]
+        # check sum part
+        try:
+            if int(checksum_part, base=16) != msg_checksum(json_part):
+                raise ValueError
+        except ValueError:
+            r_c_sum_err.incr()
+            logging.info('rx: check sum error')
+            continue
+        # update status
+        r_rx_count.incr()
+        # decode json part
+        try:
+            js_d = json.loads(json_part.decode('utf8'))
+        except (ValueError, UnicodeDecodeError):
+            r_fmt_err.incr()
+            logging.info('rx: format error')
+            continue
+        # dump rx frame
+        logging.debug('rx: frame [raw_len:%i raw_msg:%s]' % (len(serial_msg), serial_msg))
+        # process every message type
+        try:
+            # alive frame
+            if js_d['type'] == 'alive':
+                r_since_alive.set(0)
+                logging.debug('rx: alive message')
+            # redis publish frame
+            elif js_d['type'] == 'rpub':
+                chan = args.rx + js_d['chan']
+                clean_msg = js_d['msg']
+                rdb.publish(chan, clean_msg)
+                logging.debug('rx: publish from remote (channel="%s", message="%s")' % (chan, clean_msg))
+            # redis key frame
+            elif js_d['type'] == 'rkey':
+                k = args.rx + js_d['key']
+                v = js_d['val']
+                rdb.set(k, v)
+                logging.debug('rx: key from remote (key="%s", value="%s")' % (k, v))
+        except KeyError as e:
+            logging.debug('field %s not found in json message' % e)
 
 
-# export local tx:key_name to serial port and remove it
-def write_thread():
+def export_thread():
+    """Thread that export redis key as tx:my_key to serial port"""
+
+    def tx_dict_as_json(d):
+        """Convert dict object to [dict as compact json msg][C-SUM]CR and send-it."""
+        # dict -> compact json msg as bytes
+        js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
+        # add check sum as hex string to json msg, end with a CR
+        c_sum = '%02X\n' % msg_checksum(js_msg)
+        raw_msg = js_msg + c_sum.encode('utf8')
+        # send RAW message to serial line
+        ser.write(raw_msg)
+        # update stats
+        r_tx_count.incr()
+        # dump tx frame
+        logging.debug('tx: frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
+
     # init thread vars
     t_tx_alive = 0.0
     # redis pubsub: subscribe to all tx:* channels
-    p = r.pubsub()
+    p = rdb.pubsub()
     p.psubscribe(args.tx + '*')
     len_pfx = len(args.tx)
     # main loop
@@ -168,80 +153,84 @@ def write_thread():
                 except UnicodeDecodeError:
                     logging.debug('tx: redis publish contain non-utf8 byte, skip it')
         # search all tx:key_name redis keys and send it
-        for key in r.keys(args.tx + '*'):
+        for key in rdb.keys(args.tx + '*'):
             try:
                 k = key.decode('utf8')[len_pfx:]
-                v = r.get(key).decode('utf8')
+                v = rdb.get(key).decode('utf8')
                 tx_dict_as_json({'type': 'rkey', 'key': k, 'val': v})
             except UnicodeDecodeError:
                 logging.debug('tx: redis key contain non-utf8 byte, skip it')
-            r.delete(key)
+            rdb.delete(key)
         # before next loop
         time.sleep(0.2)
 
 
-# parse argument
-parser = argparse.ArgumentParser(description='Redis bridge over serial link')
-parser.add_argument('-p', '--port', type=str, default='/dev/ttyAMA0',
-                    help='serial port (default is /dev/ttyAMA0)')
-parser.add_argument('-b', '--baud', type=int, default=115200,
-                    help='baud rate (default is 115200)')
-parser.add_argument('-d', '--debug', action='store_true',
-                    help='set debug mode')
-parser.add_argument('-n', '--name', type=str, default='brg',
-                    help='name of this bridge instance (default is "brg"")')
-parser.add_argument('--alive', type=float, default=5.0,
-                    help='alive interval in second (default is 5.0)')
-parser.add_argument('--db', type=int, default=0,
-                    help='redis DB number to connect (default is 0)')
-parser.add_argument('--tx', type=str, default='tx:',
-                    help='redis key or channel prefix for trig a send (default is "tx:")')
-parser.add_argument('--rx', type=str, default='rx:',
-                    help='redis key or channel prefix for receive item (default is "rx:")')
-args = parser.parse_args()
+if __name__ == '__main__':
+    # parse argument
+    parser = argparse.ArgumentParser(description='Redis bridge over serial link')
+    parser.add_argument('-p', '--port', type=str, default='/dev/ttyAMA0',
+                        help='serial port (default is /dev/ttyAMA0)')
+    parser.add_argument('-b', '--baud', type=int, default=115200,
+                        help='baud rate (default is 115200)')
+    parser.add_argument('-d', '--debug', action='store_true',
+                        help='set debug mode')
+    parser.add_argument('-n', '--name', type=str, default='brg',
+                        help='name of this bridge instance (default is "brg")')
+    parser.add_argument('--alive', type=float, default=5.0,
+                        help='alive interval in second (default is 5.0)')
+    parser.add_argument('--db', type=int, default=0,
+                        help='redis DB number to connect (default is 0)')
+    parser.add_argument('--tx', type=str, default='tx:',
+                        help='redis key or channel prefix for trig a send (default is "tx:")')
+    parser.add_argument('--rx', type=str, default='rx:',
+                        help='redis key or channel prefix for receive item (default is "rx:")')
+    args = parser.parse_args()
 
+    # set signal handler
+    signal.signal(signal.SIGTERM, lambda sig_num, frame: sys.exit)
 
-# set signal handler
-signal.signal(signal.SIGTERM, exit_handler)
+    # set logging
+    if args.debug:
+        logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+    else:
+        logging.basicConfig(stream=sys.stderr)
 
-# set logging
-if args.debug:
-    logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
-else:
-    logging.basicConfig(stream=sys.stderr)
+    # log startup
+    logging.debug('redis_serial_sync start')
 
-# log startup
-logging.debug('redis_serial_sync start')
+    # handle DB or serial excepts
+    try:
+        # init Redis DB
+        rdb = redis.StrictRedis(db=args.db)
+        # init serial port
+        ser = serial.Serial(args.port, baudrate=args.baud)
+        # ensure serial close at exit
+        atexit.register(ser.close)
 
-# connect to Redis DB
-try:
-    r = redis.StrictRedis(db=args.db)
-except redis.RedisError as e:
-    logging.error('redis error (%s)' % e)
-    exit(1)
-# open serial port
-try:
-    s = serial.Serial(args.port, baudrate=args.baud)
-except serial.SerialException as e:
-    logging.error('serial port error (%s)' % e)
-    exit(1)
-# add clean handler
-atexit.register(clean_serial)
+        # init bridge status
+        port = RedisKey(rdb, 'port', args.port)
+        r_since_alive = RedisKey(rdb, 'since_alive', 0)
+        r_redis_db = RedisKey(rdb, 'redis_db', args.db)
+        r_tx_count = RedisKey(rdb, 'tx_count', 0)
+        r_rx_count = RedisKey(rdb, 'rx_count', 0)
+        r_c_sum_err = RedisKey(rdb, 'c_sum_err', 0)
+        r_fmt_err = RedisKey(rdb, 'fmt_err', 0)
 
-# init bridge status
-port = RedisKey(r, 'port', args.port)
-r_since_alive = RedisKey(r, 'since_alive', 0)
-r_redis_db = RedisKey(r, 'redis_db', args.db)
-r_tx_count = RedisKey(r, 'tx_count', 0)
-r_rx_count = RedisKey(r, 'rx_count', 0)
-r_c_sum_err = RedisKey(r, 'c_sum_err', 0)
-r_fmt_err = RedisKey(r, 'fmt_err', 0)
+        # start serial IO thread
+        threading.Thread(target=import_thread, daemon=True).start()
+        threading.Thread(target=export_thread, daemon=True).start()
 
-# start serial IO thread
-threading.Thread(target=read_thread, daemon=True).start()
-threading.Thread(target=write_thread, daemon=True).start()
+        # main thread
+        while True:
+            r_since_alive.incr()
+            time.sleep(1.0)
 
-# main thread
-while True:
-    r_since_alive.incr()
-    time.sleep(1.0)
+    # on redis error
+    except redis.RedisError as e:
+        logging.error('redis error (%s)' % e)
+        exit(1)
+
+    # on serial error
+    except serial.SerialException as e:
+        logging.error('serial port error (%s)' % e)
+        exit(1)

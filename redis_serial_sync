@@ -167,11 +167,12 @@ if __name__ == '__main__':
     # set signal handler
     signal.signal(signal.SIGTERM, lambda sig_num, frame: sys.exit)
 
-    # set logging
+    # logging setup
+    log_args_d = dict(format='%(asctime)s %(message)s',
+                      stream=sys.stderr, level=logging.WARNING)
     if args.debug:
-        logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
-    else:
-        logging.basicConfig(stream=sys.stderr)
+        log_args_d['level'] = logging.DEBUG
+    logging.basicConfig(**log_args_d)
 
     # log startup
     logging.debug('redis_serial_sync start')

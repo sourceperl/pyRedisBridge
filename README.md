@@ -38,11 +38,3 @@ sudo cp etc/supervisor/conf.d/rpi_bridge_internet.conf /etc/supervisor/conf.d/
 # reload conf
 sudo supervisorctl update
 ```
-
-### Systemd (auto-start) [deprecated]
-
-```bash
-sudo cp redis-serial-sync.service /etc/systemd/system/
-sudo systemctl enable redis-serial-sync.service
-sudo systemctl start redis-serial-sync.service
-```

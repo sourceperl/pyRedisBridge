@@ -159,10 +159,10 @@ def export_thread():
 if __name__ == '__main__':
     # parse argument
     parser = argparse.ArgumentParser(description='Redis bridge over serial link')
-    parser.add_argument('-p', '--port', type=str, default='/dev/ttyAMA0',
-                        help='serial port (default is /dev/ttyAMA0)')
-    parser.add_argument('-b', '--baud', type=int, default=115200,
-                        help='baud rate (default is 115200)')
+    parser.add_argument('port', type=str,
+                        help='serial port (like /dev/ttyUSB0)')
+    parser.add_argument('baudrate', type=int, nargs='?', default=115200,
+                        help='baudrate (default is 115200)')
     parser.add_argument('-d', '--debug', action='store_true',
                         help='set debug mode')
     parser.add_argument('-r', '--remote', type=str, default='rem',
@@ -191,7 +191,7 @@ if __name__ == '__main__':
         # init Redis DB
         rdb = redis.StrictRedis(db=args.db)
         # init serial port
-        ser = serial.Serial(args.port, baudrate=args.baud)
+        ser = serial.Serial(args.port, baudrate=args.baudrate)
 
         # set tx/rx prefix
         tx_prefix = f'tx:{args.remote}:'

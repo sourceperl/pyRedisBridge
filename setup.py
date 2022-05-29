@@ -11,6 +11,6 @@ setup(
     platforms='any',
     install_requires=required,
     scripts=[
-        'redis_serial_sync'
+        'redis-serial-sync'
     ]
 )

@@ -175,7 +175,7 @@ if __name__ == '__main__':
     logging.basicConfig(**log_args_d)
 
     # log startup
-    logging.debug('redis_serial_sync start')
+    logging.debug('redis-serial-sync start')
 
     # handle DB or serial excepts
     try:

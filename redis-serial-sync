@@ -27,12 +27,18 @@ import serial
 
 
 # some functions
-def msg_checksum(msg: bytes) -> int:
-    """Compute a check sum (XOR of bytes)."""
-    c_sum = 0
-    for i in msg:
-        c_sum ^= i
-    return c_sum
+def msg_crc16(msg: bytes) -> int:
+    """Compute CRC16 of a bytes message."""
+    crc = 0xFFFF
+    for item in msg:
+        next_byte = item
+        crc ^= next_byte
+        for _ in range(8):
+            lsb = crc & 1
+            crc >>= 1
+            if lsb:
+                crc ^= 0xA001
+    return crc
 
 
 # threads define
@@ -46,49 +52,51 @@ def import_thread():
     ser.flushInput()
     # receive loop
     while True:
-        # read message:  [dict as a compact json msg][C-SUM]CR
+        # read message:  [dict as a compact json msg][CRC16]CR
         serial_msg = ser.readline()
-        # decode message parts: [json part][2 digits hex checksum]
+        # decode message parts: [json part][4 digits hex CRC16]
         clean_msg = serial_msg.rstrip()
-        checksum_part = clean_msg[-2:]
-        json_part = clean_msg[:-2]
-        # check sum part
+        crc_part = clean_msg[-4:]
+        json_part = clean_msg[:-4]
+        # CRC16 part
         try:
-            if int(checksum_part, base=16) != msg_checksum(json_part):
+            if int(crc_part, base=16) != msg_crc16(json_part):
                 raise ValueError
         except ValueError:
-            rdb.hincrby(stats_hash, stat_checksum_err)
-            logging.warning('receive frame with check sum error')
+            rdb.hincrby(stats_hash, stat_crc_err)
+            logging.warning('received frame with CRC error')
             continue
         # decode json part
         try:
             json_d = json.loads(json_part.decode('utf8'))
         except (ValueError, UnicodeDecodeError):
             rdb.hincrby(stats_hash, stat_format_err)
-            logging.warning('receive frame with format error')
+            logging.warning('received frame with format error')
             continue
         # dump rx frame
-        logging.debug(f'receive frame raw_msg: {serial_msg} len: {len(serial_msg)}')
+        logging.debug(f'received frame raw_msg: {serial_msg} len: {len(serial_msg)}')
         # process every message type
         try:
             # alive frame
             if json_d['type'] == 'alive':
                 rdb.hset(stats_hash, stat_since_alive, 0)
-                logging.debug('receive an alive message from remote')
+                logging.debug('received an alive message from remote')
             # redis publish frame
             elif json_d['type'] == 'rpub':
                 chan = rx_prefix + json_d['chan']
                 clean_msg = json_d['msg']
                 rdb.publish(chan, clean_msg)
                 rdb.hincrby(stats_hash, stat_rx_count)
-                logging.debug(f'receive a publish on channel: {chan} message: {clean_msg}")')
+                logging.debug(f'received a publish on channel: {chan} message: {clean_msg}")')
             # redis key frame
             elif json_d['type'] == 'rkey':
                 remote_k = rx_prefix + json_d['key']
                 remote_v = json_d['val']
                 rdb.set(remote_k, remote_v)
                 rdb.hincrby(stats_hash, stat_rx_count)
-                logging.debug(f'receive a key: {remote_k} value: {remote_v})')
+                logging.debug(f'received a key: {remote_k} value: {remote_v}')
+            else:
+                logging.warning(f'received an unknown frame type: {json_d["type"]}')
         except KeyError as k_except:
             logging.debug(f'field {k_except} not found in json message')
 
@@ -101,12 +109,12 @@ def export_thread():
         # dict -> compact json msg as bytes
         js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
         # add check sum as hex string to json msg, end with a CR
-        c_sum = '%02X\n' % msg_checksum(js_msg)
+        c_sum = '%04X\n' % msg_crc16(js_msg)
         raw_msg = js_msg + c_sum.encode('utf8')
         # send RAW message to serial line
         ser.write(raw_msg)
         # dump tx frame
-        logging.debug(f'transmit frame raw_msg: {raw_msg} len: {len(raw_msg)} ')
+        logging.debug(f'transmit a frame raw_msg: {raw_msg} len: {len(raw_msg)} ')
 
     # init thread vars
     t_tx_alive = 0.0
@@ -194,7 +202,7 @@ if __name__ == '__main__':
         stat_port = 'port'
         stat_redis_db = 'redis_db'
         stat_since_alive = 'since_alive'
-        stat_checksum_err = 'checksum_error'
+        stat_crc_err = 'crc_error'
         stat_format_err = 'format_error'
         stat_tx_count = 'tx_count'
         stat_rx_count = 'rx_count'
@@ -203,7 +211,7 @@ if __name__ == '__main__':
         rdb.hset(stats_hash, stat_port, args.port)
         rdb.hset(stats_hash, stat_redis_db, args.db)
         rdb.hset(stats_hash, stat_since_alive, 0)
-        rdb.hset(stats_hash, stat_checksum_err, 0)
+        rdb.hset(stats_hash, stat_crc_err, 0)
         rdb.hset(stats_hash, stat_format_err, 0)
         rdb.hset(stats_hash, stat_tx_count, 0)
         rdb.hset(stats_hash, stat_rx_count, 0)
@@ -218,6 +226,8 @@ if __name__ == '__main__':
             rdb.delete(stats_hash)
             # close serial port
             ser.close()
+
+
         # register on_exit handler
         atexit.register(on_exit)
 

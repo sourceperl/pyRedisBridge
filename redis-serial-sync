@@ -27,7 +27,7 @@ import serial
 
 
 # some functions
-def msg_checksum(msg):
+def msg_checksum(msg: bytes) -> int:
     """Compute a check sum (XOR of bytes)."""
     c_sum = 0
     for i in msg:
@@ -68,7 +68,7 @@ def import_thread():
             logging.warning('receive frame with format error')
             continue
         # dump rx frame
-        logging.debug('receive frame [len:%i raw_msg:%s]' % (len(serial_msg), serial_msg))
+        logging.debug(f'receive frame raw_msg: {serial_msg} len: {len(serial_msg)}')
         # process every message type
         try:
             # alive frame
@@ -81,22 +81,22 @@ def import_thread():
                 clean_msg = json_d['msg']
                 rdb.publish(chan, clean_msg)
                 rdb.hincrby(stats_hash, stat_rx_count)
-                logging.debug('receive a publish from remote (channel="%s", message="%s")' % (chan, clean_msg))
+                logging.debug(f'receive a publish on channel: {chan} message: {clean_msg}")')
             # redis key frame
             elif json_d['type'] == 'rkey':
                 remote_k = rx_prefix + json_d['key']
                 remote_v = json_d['val']
                 rdb.set(remote_k, remote_v)
                 rdb.hincrby(stats_hash, stat_rx_count)
-                logging.debug('receive a key from remote (key="%s", value="%s")' % (remote_k, remote_v))
+                logging.debug(f'receive a key: {remote_k} value: {remote_v})')
         except KeyError as k_except:
-            logging.debug('field %s not found in json message' % k_except)
+            logging.debug(f'field {k_except} not found in json message')
 
 
 def export_thread():
     """Thread that export redis key as tx:[remote]:my_key to serial port"""
 
-    def tx_as_json(d):
+    def tx_as_json(d: dict):
         """Convert dict object to [dict as compact json msg][C-SUM]CR and send-it."""
         # dict -> compact json msg as bytes
         js_msg = json.dumps(d, separators=(',', ':')).encode('utf8')
@@ -106,7 +106,7 @@ def export_thread():
         # send RAW message to serial line
         ser.write(raw_msg)
         # dump tx frame
-        logging.debug('transmit frame [raw_len:%i raw_msg:%s]' % (len(raw_msg), raw_msg))
+        logging.debug(f'transmit frame raw_msg: {raw_msg} len: {len(raw_msg)} ')
 
     # init thread vars
     t_tx_alive = 0.0
@@ -126,13 +126,14 @@ def export_thread():
             if d_msg is None:
                 break
             elif d_msg['type'] == 'pmessage':
+                chan_b = d_msg['channel']
                 try:
-                    tx_chan = d_msg['channel'].decode('utf8')[len_pfx:]
-                    tx_msg = d_msg['data'].decode('utf8')
-                    tx_as_json({'type': 'rpub', 'chan': tx_chan, 'msg': tx_msg})
+                    chan_str = chan_b.decode('utf8')[len_pfx:]
+                    msg_str = d_msg['data'].decode('utf8')
+                    tx_as_json({'type': 'rpub', 'chan': chan_str, 'msg': msg_str})
                     rdb.hincrby(stats_hash, stat_tx_count)
                 except UnicodeDecodeError:
-                    logging.warning('transmit redis publish contain non-utf8 byte, skip it')
+                    logging.warning(f'transmit publish for channel {chan_b} contain non-utf8 byte, skip it')
         # search all tx:key_name redis keys and send it
         for key in rdb.keys(tx_prefix + '*'):
             try:
@@ -141,7 +142,7 @@ def export_thread():
                 tx_as_json({'type': 'rkey', 'key': tx_key, 'val': tx_value})
                 rdb.hincrby(stats_hash, stat_tx_count)
             except UnicodeDecodeError:
-                logging.debug('transmit redis key contain non-utf8 byte, skip it')
+                logging.warning(f'transmit key {key} contain non-utf8 byte, skip it')
             rdb.delete(key)
         # before next loop
         time.sleep(0.2)
@@ -168,7 +169,7 @@ if __name__ == '__main__':
     signal.signal(signal.SIGTERM, lambda sig_num, frame: sys.exit)
 
     # logging setup
-    log_args_d = dict(format='%(asctime)s %(message)s',
+    log_args_d = dict(format=f'[%(asctime)s] - %(levelname)-7s - %(message)s',
                       stream=sys.stderr, level=logging.WARNING)
     if args.debug:
         log_args_d['level'] = logging.DEBUG

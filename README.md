@@ -1,14 +1,21 @@
 # pyRedisBridge
 
-Export keys from a redis DB to another one over a serial link (like Bridge on Arduino Yun)
+Export keys from a redis DB to another one over a serial link.
 
 
-Redis A <--- /dev/ttyAMA0 ---> Redis B
+Redis 1 (remote = node2) <--- /dev/ttyUSB0 ---> Redis 2 (remote = node1) 
 
-1. create key "tx:name" on first Redis A
-2. redis-serial-sync transfer name with value on Redis B
-3. key "rx:name" is set on redis B
-4. key "tx:name" is delete on redis A
+```bash
+# on redis 1
+redis-serial-sync --remote node1 /dev/ttyUSB0 9600
+# on redis 2
+redis-serial-sync --remote node2 /dev/ttyUSB0 9600
+```
+
+1. create key "tx:node2:keyname" on first Redis 1
+2. redis-serial-sync transfer key and it's value to Redis 2
+3. key "tx:node2:keyname" is delete on redis 1
+4. key "rx:node1:keyname" is set on redis 2
 
 ### Setup
 
@@ -29,12 +36,12 @@ sudo cp etc/udev/rules.d/10-usb-serial.local.rules /etc/udev/rules.d/
 
 ```bash
 sudo apt-get install supervisor
-# for "bureau" rpi
-sudo cp etc/supervisor/conf.d/rpi_bridge_bureau.conf /etc/supervisor/conf.d/
-# for "indus" rpi
-sudo cp etc/supervisor/conf.d/rpi_bridge_indus.conf /etc/supervisor/conf.d/
-# for "internet" rpi
-sudo cp etc/supervisor/conf.d/rpi_bridge_internet.conf /etc/supervisor/conf.d/
+# for bridge "bureau"
+sudo cp etc/supervisor/conf.d/redis-bridges-bureau.conf /etc/supervisor/conf.d/redis-bridges.conf
+# for bridge "indus"
+sudo cp etc/supervisor/conf.d/redis-bridges-indus.conf /etc/supervisor/conf.d/redis-bridges.conf
+# for bridge "internet"
+sudo cp etc/supervisor/conf.d/redis-bridges-internet.conf /etc/supervisor/conf.d/redis-bridges.conf
 # reload conf
 sudo supervisorctl update
 ```

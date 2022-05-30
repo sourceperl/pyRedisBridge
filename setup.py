@@ -1,5 +1,6 @@
 """Redis bridge setup script."""
 
+import pyRedisBridge
 from setuptools import setup
 
 with open('requirements.txt') as f:
@@ -7,11 +8,12 @@ with open('requirements.txt') as f:
 
 setup(
     name='pyRedisBridge',
-    version='0.1.0',
-    license='MIT',
-    url='https://github.com/sourceperl/pyRedisBridge',
+    version=pyRedisBridge.__version__,
+    license=pyRedisBridge.__license__,
+    url=pyRedisBridge.__url__,
     platforms='any',
     install_requires=required,
+    packages=['pyRedisBridge'],
     scripts=[
         'redis-serial-sync'
     ]

@@ -24,6 +24,7 @@ import threading
 import time
 import redis
 import serial
+import pyRedisBridge
 
 
 # some functions
@@ -163,14 +164,15 @@ if __name__ == '__main__':
                         help='serial port (like /dev/ttyUSB0)')
     parser.add_argument('baudrate', type=int, nargs='?', default=115200,
                         help='baudrate (default is 115200)')
+    parser.add_argument('--alive', type=float, default=30.0,
+                        help='alive interval in second (default is 30.0)')
     parser.add_argument('-d', '--debug', action='store_true',
                         help='set debug mode')
     parser.add_argument('-r', '--remote', type=str, default='rem',
                         help='name of the remote bridge instance (default is "rem")')
-    parser.add_argument('--alive', type=float, default=30.0,
-                        help='alive interval in second (default is 30.0)')
     parser.add_argument('--db', type=int, default=0,
                         help='redis DB number to connect (default is 0)')
+    parser.add_argument('-v', '--version', action='version', version=pyRedisBridge.__version__)
     args = parser.parse_args()
 
     # set signal handler

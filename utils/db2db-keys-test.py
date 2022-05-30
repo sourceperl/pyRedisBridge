@@ -2,6 +2,9 @@
 
 """Test data transmit of random strings between bridges nodes.
 
+node0 (on redis db 0) -> node1 (on redis db 1)
+ tx:node1:test-UUID       rx:node0:test-UUID
+
 use USB Null Modem Cable between /dev/ttyUSB0 and /dev/ttyUSB1
 on node0: ./redis-serial-sync --remote node1 --db 0 /dev/ttyUSB0
 on node1: ./redis-serial-sync --remote node0 --db 1 /dev/ttyUSB1
@@ -22,12 +25,18 @@ CHARS_BUNDLE = string.ascii_letters + string.digits + string.punctuation
 if __name__ == '__main__':
     db0 = redis.StrictRedis(db=0)
     db1 = redis.StrictRedis(db=1)
-    your_uuid = uuid.uuid4()
-    tx_key = f'tx:node1:test-{your_uuid}'
-    rx_key = f'rx:node0:test-{your_uuid}'
+    key_uuid = uuid.uuid4()
+    tx_key = f'tx:node1:test-{key_uuid}'
+    rx_key = f'rx:node0:test-{key_uuid}'
     good_count = 0
-    # clean db1 at exit
-    atexit.register(db1.delete, rx_key)
+
+    def on_exit():
+        """Exit handler."""
+        # time to processing last request before clean
+        time.sleep(.5)
+        # clean db1 at exit
+        db1.delete(rx_key)
+    atexit.register(on_exit)
 
     while True:
         # get a random string from bundle char src
@@ -36,7 +45,7 @@ if __name__ == '__main__':
         tx_rand_bytes = rand_str.encode()
         db0.set(tx_key, tx_rand_bytes)
         # wait for transmit node0 -> serial -> node1
-        time.sleep(0.5)
+        time.sleep(1.0)
         # receive rx random bytes
         rx_rand_bytes = db1.get(rx_key)
         # print test result
